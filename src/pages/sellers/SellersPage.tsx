@@ -10,9 +10,11 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { SkeletonCard } from '@/components/ui/Skeleton';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import type { VendorSummary, Purchase } from '@/types/database';
+import { useAuthStore } from '@/stores/authStore';
 
 export function SellersPage() {
   const navigate = useNavigate();
+  const { user } = useAuthStore();
   const [selected, setSelected] = useState<string | null>(null);
   const [sort, setSort] = useState<'total_spent' | 'order_count' | 'seller_name'>('total_spent');
 

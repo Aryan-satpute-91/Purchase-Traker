@@ -17,6 +17,7 @@ import {
 } from '@/lib/utils';
 import type { Purchase, ProjectSummary } from '@/types/database';
 import { startOfMonth, endOfMonth } from 'date-fns';
+import { useAuthStore } from '@/stores/authStore';
 
 function UrgencyBadge({ days }: { days: number | null }) {
   const color = urgencyColor(days);
@@ -38,6 +39,7 @@ function UrgencyBadge({ days }: { days: number | null }) {
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const { user } = useAuthStore();
   const now = new Date();
   const monthStart = startOfMonth(now).toISOString();
   const monthEnd = endOfMonth(now).toISOString();
