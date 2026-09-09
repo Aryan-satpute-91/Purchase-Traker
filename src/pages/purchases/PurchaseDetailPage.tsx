@@ -3,8 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft, Edit2, Trash2, Download, Plus, ShieldCheck,
-  RotateCcw, MapPin, CreditCard, FileText, Clock, Store, FolderKanban, Package
+  RotateCcw, MapPin, CreditCard, FileText, Clock, Store, FolderKanban, Package, X
 } from 'lucide-react';
+import * as Dialog from '@radix-ui/react-dialog';
 import { supabase } from '@/lib/supabase';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { Timeline } from '@/components/shared/Timeline';
@@ -14,11 +15,12 @@ import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { SkeletonCard } from '@/components/ui/Skeleton';
+import { FileDropzone } from '@/components/shared/FileDropzone';
 import {
   formatCurrency, formatDate, daysUntil, urgencyColor,
   warrantyExpiryDate, returnDeadlineDate, PAYMENT_METHOD_LABELS
 } from '@/lib/utils';
-import type { Purchase, Document, InventoryItem, TimeEntry, LifecycleStatus, LifecycleEvent } from '@/types/database';
+import type { Purchase, Document, InventoryItem, TimeEntry, LifecycleStatus, LifecycleEvent, DocType } from '@/types/database';
 import { LifecyclePill } from '@/components/ui/LifecyclePill';
 import { LifecycleStepper } from '@/components/purchases/LifecycleStepper';
 import { PriceHistoryPanel } from '@/components/purchases/PriceHistoryPanel';
@@ -41,6 +43,10 @@ export function PurchaseDetailPage() {
   const [logActivity, setLogActivity] = useState('testing');
   const [logDuration, setLogDuration] = useState(30);
   const [logNotes, setLogNotes] = useState('');
+  const [addDocModalOpen, setAddDocModalOpen] = useState(false);
+  const [docType, setDocType] = useState<DocType>('invoice');
+  const [docFiles, setDocFiles] = useState<File[]>([]);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
 
   const { data: purchase, isLoading } = useQuery({
     queryKey: ['purchase', id],
@@ -170,15 +176,72 @@ export function PurchaseDetailPage() {
     onError: () => toast.error('Failed to log time'),
   });
 
+  const handleUploadDocument = async () => {
+    if (!docFiles.length) {
+      toast.error('Please select a file to upload');
+      return;
+    }
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast.error('Please sign in to upload documents');
+      return;
+    }
+    setUploadingDoc(true);
+    try {
+      for (const file of docFiles) {
+        const path = `${user.id}/${Date.now()}_${file.name}`;
+        const { error: uploadErr } = await supabase.storage.from('purchase-docs').upload(path, file);
+        if (uploadErr) throw uploadErr;
+
+        const { error: dbErr } = await supabase.from('documents').insert({
+          purchase_id: id!,
+          doc_type: docType,
+          file_path: path,
+        });
+        if (dbErr) throw dbErr;
+      }
+      toast.success('Document attached successfully!');
+      queryClient.invalidateQueries({ queryKey: ['purchase', id] });
+      setDocFiles([]);
+      setAddDocModalOpen(false);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : (err as { message?: string })?.message;
+      console.error('Document upload error:', err);
+      toast.error(msg ? `Upload failed: ${msg}` : 'Failed to upload document');
+    } finally {
+      setUploadingDoc(false);
+    }
+  };
+
+  const { mutate: deleteDocument } = useMutation({
+    mutationFn: async (doc: Document) => {
+      const { error: dbErr } = await supabase.from('documents').delete().eq('id', doc.id);
+      if (dbErr) throw dbErr;
+      await supabase.storage.from('purchase-docs').remove([doc.file_path]);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['purchase', id] });
+      toast.success('Document removed');
+    },
+    onError: () => toast.error('Failed to remove document'),
+  });
+
   const downloadDocument = async (filePath: string, fileName: string) => {
-    const { data } = await supabase.storage.from('purchase-docs').download(filePath);
-    if (data) {
-      const url = URL.createObjectURL(data);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      a.click();
-      URL.revokeObjectURL(url);
+    try {
+      const { data, error } = await supabase.storage.from('purchase-docs').download(filePath);
+      if (error) throw error;
+      if (data) {
+        const url = URL.createObjectURL(data);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Download failed';
+      console.error('Download error:', err);
+      toast.error(`Download failed: ${msg}`);
     }
   };
 
@@ -373,23 +436,61 @@ export function PurchaseDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle><FileText className="inline h-4 w-4 mr-1.5 text-slate-400" />Documents</CardTitle>
-              <Button variant="ghost" size="sm" icon={<Plus className="h-3.5 w-3.5" />}>Add</Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Plus className="h-3.5 w-3.5" />}
+                onClick={() => setAddDocModalOpen(true)}
+              >
+                Add
+              </Button>
             </CardHeader>
             {!purchase.documents?.length ? (
-              <p className="text-sm text-slate-400">No documents attached</p>
+              <div className="text-center py-6 px-4 border border-dashed border-surface-200 rounded-xl">
+                <FileText className="h-8 w-8 text-slate-300 mx-auto mb-2" />
+                <p className="text-sm font-medium text-slate-600">No documents attached</p>
+                <p className="text-xs text-slate-400 mb-3">Upload receipts, invoices or warranties</p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={<Plus className="h-3.5 w-3.5" />}
+                  onClick={() => setAddDocModalOpen(true)}
+                >
+                  Upload Document
+                </Button>
+              </div>
             ) : (
               <div className="grid grid-cols-2 gap-2">
                 {purchase.documents.map((doc) => (
-                  <button
+                  <div
                     key={doc.id}
-                    onClick={() => downloadDocument(doc.file_path, doc.doc_type)}
-                    className="p-2 border border-surface-200 rounded-xl hover:border-accent-300 hover:bg-accent-50/30 transition-all text-left group"
+                    className="p-2.5 border border-surface-200 rounded-xl hover:border-accent-300 hover:bg-accent-50/20 transition-all text-left group relative flex flex-col justify-between"
                   >
-                    <FileText className="h-8 w-8 text-slate-300 group-hover:text-accent-500 transition-colors mb-1" />
-                    <p className="text-xs text-slate-600 capitalize truncate">{doc.doc_type.replace('_', ' ')}</p>
-                    <p className="text-[10px] text-slate-400">{formatDate(doc.uploaded_at)}</p>
-                    <Download className="h-3 w-3 text-slate-300 group-hover:text-accent-500 mt-1 transition-colors" />
-                  </button>
+                    <button
+                      onClick={() => downloadDocument(doc.file_path, `${doc.doc_type}_${purchase.item_name}`)}
+                      className="w-full text-left"
+                    >
+                      <FileText className="h-7 w-7 text-slate-400 group-hover:text-accent-500 transition-colors mb-1.5" />
+                      <p className="text-xs font-semibold text-slate-700 capitalize truncate">{doc.doc_type.replace('_', ' ')}</p>
+                      <p className="text-[10px] text-slate-400">{formatDate(doc.uploaded_at)}</p>
+                    </button>
+                    <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-surface-100">
+                      <button
+                        onClick={() => downloadDocument(doc.file_path, `${doc.doc_type}_${purchase.item_name}`)}
+                        className="text-[11px] font-medium text-accent-600 hover:text-accent-700 flex items-center gap-1"
+                        title="Download file"
+                      >
+                        <Download className="h-3 w-3" /> Download
+                      </button>
+                      <button
+                        onClick={() => deleteDocument(doc)}
+                        className="text-slate-300 hover:text-red-500 transition-colors p-0.5"
+                        title="Delete document"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -512,6 +613,79 @@ export function PurchaseDetailPage() {
         onConfirm={() => deletePurchase()}
         loading={deleting}
       />
+
+      {/* Upload Document Modal */}
+      <Dialog.Root open={addDocModalOpen} onOpenChange={setAddDocModalOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 animate-scale-in w-full max-w-md mx-4">
+            <div className="bg-white rounded-2xl shadow-card-lg border border-surface-100 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <Dialog.Title className="text-lg font-semibold text-slate-900">Attach Document</Dialog.Title>
+                <button
+                  onClick={() => setAddDocModalOpen(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-surface-100 transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Document Type
+                  </label>
+                  <select
+                    value={docType}
+                    onChange={(e) => setDocType(e.target.value as DocType)}
+                    className="w-full h-10 px-3 rounded-xl border border-surface-200 bg-surface-50 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-accent-500"
+                  >
+                    <option value="invoice">Invoice</option>
+                    <option value="receipt">Receipt</option>
+                    <option value="warranty">Warranty Card</option>
+                    <option value="order_confirmation">Order Confirmation</option>
+                    <option value="delivery_proof">Delivery Proof</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                    File (PDF or Image)
+                  </label>
+                  <FileDropzone
+                    onFiles={(files) => setDocFiles(files)}
+                    multiple={false}
+                    label="Drop file here or click to browse"
+                    sublabel="Supports PDF, PNG, JPG up to 20MB"
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    onClick={handleUploadDocument}
+                    loading={uploadingDoc}
+                    disabled={!docFiles.length}
+                  >
+                    Upload & Attach
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setDocFiles([]);
+                      setAddDocModalOpen(false);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

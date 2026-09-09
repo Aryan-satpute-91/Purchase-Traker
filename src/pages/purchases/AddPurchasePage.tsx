@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -87,18 +87,57 @@ function Select({ className, children, ...props }: React.SelectHTMLAttributes<HT
 
 export function AddPurchasePage() {
   const navigate = useNavigate();
+  const { id } = useParams<{ id?: string }>();
+  const isEditing = Boolean(id);
   const queryClient = useQueryClient();
   const { user } = useAuthStore();
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2>(isEditing ? 2 : 1);
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [duplicates, setDuplicates] = useState<{ item_name: string; order_date: string | null }[]>([]);
 
-  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<FormData>({
+  const { register, handleSubmit, watch, setValue, reset, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { quantity: 1, base_price: 0, gst_amount: 0, shipping_cost: 0, discount_amount: 0, order_status: 'ordered' },
   });
+
+  const { data: existingPurchase, isLoading: loadingExisting } = useQuery({
+    queryKey: ['purchase', id],
+    queryFn: async () => {
+      if (!id) return null;
+      const { data, error } = await supabase.from('purchases').select('*').eq('id', id).single();
+      if (error) throw error;
+      return data;
+    },
+    enabled: isEditing,
+  });
+
+  useEffect(() => {
+    if (existingPurchase) {
+      setStep(2);
+      reset({
+        item_name: existingPurchase.item_name || '',
+        category: existingPurchase.category || '',
+        quantity: existingPurchase.quantity || 1,
+        seller_id: existingPurchase.seller_id || '',
+        project_id: existingPurchase.project_id || '',
+        base_price: existingPurchase.base_price || 0,
+        gst_amount: existingPurchase.gst_amount || 0,
+        shipping_cost: existingPurchase.shipping_cost || 0,
+        discount_amount: existingPurchase.discount_amount || 0,
+        payment_method: existingPurchase.payment_method || '',
+        transaction_id: existingPurchase.transaction_id || '',
+        order_date: existingPurchase.order_date ? existingPurchase.order_date.split('T')[0] : '',
+        expected_delivery_date: existingPurchase.expected_delivery_date ? existingPurchase.expected_delivery_date.split('T')[0] : '',
+        order_status: existingPurchase.order_status || 'ordered',
+        warranty_months: existingPurchase.warranty_months || undefined,
+        return_window_days: existingPurchase.return_window_days || undefined,
+        purpose: existingPurchase.purpose || '',
+        storage_location: existingPurchase.storage_location || '',
+      });
+    }
+  }, [existingPurchase, reset]);
 
   const { data: sellers } = useQuery({
     queryKey: ['sellers'],
@@ -213,6 +252,44 @@ export function AddPurchasePage() {
         projectId = p.id;
       }
 
+      if (isEditing && id) {
+        const { error: updateErr } = await supabase
+          .from('purchases')
+          .update({
+            project_id: projectId,
+            seller_id: sellerId,
+            item_name: data.item_name,
+            category: data.category || null,
+            quantity: data.quantity,
+            base_price: data.base_price,
+            gst_amount: data.gst_amount,
+            shipping_cost: data.shipping_cost,
+            discount_amount: data.discount_amount,
+            order_status: data.order_status as never,
+            order_date: data.order_date ? new Date(data.order_date).toISOString() : null,
+            expected_delivery_date: data.expected_delivery_date ? new Date(data.expected_delivery_date).toISOString() : null,
+            payment_method: (data.payment_method as never) || null,
+            transaction_id: data.transaction_id || null,
+            warranty_months: data.warranty_months || null,
+            return_window_days: data.return_window_days || null,
+            purpose: data.purpose || null,
+            storage_location: data.storage_location || null,
+          })
+          .eq('id', id);
+        if (updateErr) throw updateErr;
+
+        await supabase
+          .from('inventory')
+          .update({
+            item_name: data.item_name,
+            quantity_purchased: data.quantity,
+            location: data.storage_location || null,
+          })
+          .eq('purchase_id', id);
+
+        return id;
+      }
+
       // Create purchase
       const { data: purchase, error: purchaseErr } = await supabase
         .from('purchases')
@@ -266,11 +343,12 @@ export function AddPurchasePage() {
 
       return purchase.id;
     },
-    onSuccess: (id) => {
+    onSuccess: (savedId) => {
       queryClient.invalidateQueries({ queryKey: ['purchases'] });
+      queryClient.invalidateQueries({ queryKey: ['purchase', savedId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
-      toast.success('Purchase added!');
-      navigate(`/purchases/${id}`);
+      toast.success(isEditing ? 'Purchase updated!' : 'Purchase added!');
+      navigate(`/purchases/${savedId}`);
     },
     onError: (err) => {
       toast.error((err as Error).message || 'Failed to save purchase');
@@ -279,34 +357,45 @@ export function AddPurchasePage() {
 
   const onSubmit = handleSubmit((data) => savePurchase(data));
 
+  if (isEditing && loadingExisting) {
+    return (
+      <div className="max-w-2xl animate-fade-in space-y-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-64 w-full rounded-2xl" />
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-2xl animate-fade-in">
       <PageHeader
-        title="Add Purchase"
-        subtitle="Track a new purchase with all its details"
+        title={isEditing ? 'Edit Purchase' : 'Add Purchase'}
+        subtitle={isEditing ? 'Update purchase specifications and order details' : 'Track a new purchase with all its details'}
         breadcrumb={
-          <button onClick={() => navigate('/purchases')} className="text-sm text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-1">
-            Purchases <ChevronRight className="h-3 w-3" />
+          <button onClick={() => navigate(isEditing ? `/purchases/${id}` : '/purchases')} className="text-sm text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-1">
+            {isEditing ? 'Purchase Details' : 'Purchases'} <ChevronRight className="h-3 w-3" />
           </button>
         }
       />
 
-      {/* Step indicator */}
-      <div className="flex items-center gap-3 mb-6">
-        {[1, 2].map((s) => (
-          <div key={s} className="flex items-center gap-2">
-            <div className={cn('w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold transition-all',
-              step >= s ? 'bg-accent-600 text-white' : 'bg-surface-200 text-slate-400'
-            )}>
-              {s}
+      {/* Step indicator (only when creating) */}
+      {!isEditing && (
+        <div className="flex items-center gap-3 mb-6">
+          {[1, 2].map((s) => (
+            <div key={s} className="flex items-center gap-2">
+              <div className={cn('w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold transition-all',
+                step >= s ? 'bg-accent-600 text-white' : 'bg-surface-200 text-slate-400'
+              )}>
+                {s}
+              </div>
+              <span className={cn('text-sm', step === s ? 'font-medium text-slate-800' : 'text-slate-400')}>
+                {s === 1 ? 'Upload document' : 'Complete details'}
+              </span>
+              {s === 1 && <ChevronRight className="h-4 w-4 text-slate-300" />}
             </div>
-            <span className={cn('text-sm', step === s ? 'font-medium text-slate-800' : 'text-slate-400')}>
-              {s === 1 ? 'Upload document' : 'Complete details'}
-            </span>
-            {s === 1 && <ChevronRight className="h-4 w-4 text-slate-300" />}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* Step 1 */}
       {step === 1 && (
@@ -496,21 +585,23 @@ export function AddPurchasePage() {
 
           {/* Actions */}
           <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 pb-6">
-            <Button
-              variant="ghost"
-              type="button"
-              className="h-11 sm:h-10 justify-center"
-              icon={<ChevronLeft className="h-4 w-4" />}
-              onClick={() => setStep(1)}
-            >
-              Back
-            </Button>
-            <div className="flex items-center gap-2">
+            {!isEditing && (
+              <Button
+                variant="ghost"
+                type="button"
+                className="h-11 sm:h-10 justify-center"
+                icon={<ChevronLeft className="h-4 w-4" />}
+                onClick={() => setStep(1)}
+              >
+                Back
+              </Button>
+            )}
+            <div className="flex items-center gap-2 ml-auto">
               <Button
                 variant="secondary"
                 type="button"
                 className="flex-1 sm:flex-initial h-11 sm:h-10 justify-center"
-                onClick={() => navigate('/purchases')}
+                onClick={() => navigate(isEditing ? `/purchases/${id}` : '/purchases')}
               >
                 Cancel
               </Button>
@@ -521,7 +612,7 @@ export function AddPurchasePage() {
                 className="flex-1 sm:flex-initial h-11 sm:h-10 justify-center"
                 icon={<Package className="h-4 w-4" />}
               >
-                Save purchase
+                {isEditing ? 'Update purchase' : 'Save purchase'}
               </Button>
             </div>
           </div>

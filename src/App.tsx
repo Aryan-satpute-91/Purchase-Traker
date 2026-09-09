@@ -120,6 +120,7 @@ function AppRoutes() {
         <Route path="/purchases" element={<AllPurchasesPage />} />
         <Route path="/purchases/new" element={<AddPurchasePage />} />
         <Route path="/purchases/:id" element={<PurchaseDetailPage />} />
+        <Route path="/purchases/:id/edit" element={<AddPurchasePage />} />
 
         {/* Projects */}
         <Route path="/projects" element={<ProjectsListPage />} />
