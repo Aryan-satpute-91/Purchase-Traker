@@ -140,30 +140,44 @@ export function AddPurchasePage() {
   const handleFiles = async (files: File[]) => {
     setUploadedFiles(files);
     if (files.length === 0) return;
+    if (!user) {
+      toast.error('Please log in first to upload documents');
+      return;
+    }
     setOcrLoading(true);
     try {
       const file = files[0];
-      const path = `${user?.id}/${Date.now()}_${file.name}`;
+      const path = `${user.id}/${Date.now()}_${file.name}`;
       const { error: uploadErr } = await supabase.storage.from('purchase-docs').upload(path, file);
-      if (uploadErr) throw uploadErr;
-
-      const { data: fnData, error: fnErr } = await supabase.functions.invoke('extract-document', {
-        body: { filePath: path },
-      });
-      if (fnErr) throw fnErr;
-
-      const extracted = fnData?.data;
-      if (extracted) {
-        if (extracted.item_name) setValue('item_name', extracted.item_name);
-        if (extracted.base_price) setValue('base_price', extracted.base_price);
-        if (extracted.gst_amount) setValue('gst_amount', extracted.gst_amount);
-        if (extracted.total_amount && !extracted.base_price) setValue('base_price', extracted.total_amount);
-        if (extracted.invoice_date) setValue('order_date', extracted.invoice_date?.split('T')[0]);
-        if (!extracted._mock) toast.success('Details extracted from document!');
+      if (uploadErr) {
+        console.error('Storage upload error:', uploadErr);
+        throw uploadErr;
       }
+
+      // Attempt OCR extraction if the Edge Function is deployed
+      try {
+        const { data: fnData, error: fnErr } = await supabase.functions.invoke('extract-document', {
+          body: { filePath: path },
+        });
+        if (!fnErr && fnData?.data) {
+          const extracted = fnData.data;
+          if (extracted.item_name) setValue('item_name', extracted.item_name);
+          if (extracted.base_price) setValue('base_price', extracted.base_price);
+          if (extracted.gst_amount) setValue('gst_amount', extracted.gst_amount);
+          if (extracted.total_amount && !extracted.base_price) setValue('base_price', extracted.total_amount);
+          if (extracted.invoice_date) setValue('order_date', extracted.invoice_date?.split('T')[0]);
+          if (!extracted._mock) toast.success('Details extracted from document!');
+        }
+      } catch (fnErr) {
+        // Edge function not deployed or failed — file was still uploaded successfully
+        console.warn('OCR extraction function unavailable:', fnErr);
+      }
+
       setStep(2);
-    } catch (err) {
-      toast.error('Upload failed — you can still fill in details manually');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : (err as { message?: string })?.message;
+      console.error('Upload error:', err);
+      toast.error(message ? `Upload failed: ${message}` : 'Upload failed — you can still fill in details manually');
       setStep(2);
     } finally {
       setOcrLoading(false);
