@@ -39,13 +39,8 @@ const queryClient = new QueryClient({
   },
 });
 
-const ALLOWED_EMAILS = [
-  'aryansatpute97@gmail.com',
-  'nishantpawade77@gmail.com',
-];
-
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading, signOut } = useAuth();
+  const { user, loading } = useAuth();
   const hasAuthParams =
     typeof window !== 'undefined' &&
     (window.location.search.includes('code=') ||
@@ -69,37 +64,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) return <Navigate to="/auth" replace />;
-
-  const userEmail = user.email?.toLowerCase();
-  const isAllowed = userEmail && ALLOWED_EMAILS.includes(userEmail);
-
-  if (!isAllowed) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-surface-50 via-white to-accent-50 flex items-center justify-center px-4">
-        <div className="bg-white rounded-2xl shadow-card-lg border border-surface-200 p-8 max-w-md w-full text-center animate-scale-in">
-          <div className="w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center mx-auto mb-4 text-2xl">
-            🔒
-          </div>
-          <h2 className="text-xl font-bold text-slate-900 mb-2">Access Restricted</h2>
-          <p className="text-sm text-slate-600 mb-4 leading-relaxed">
-            This purchase tracker is private and configured for team members:
-            <br />
-            <strong className="text-slate-800">aryansatpute97@gmail.com</strong> and <strong className="text-slate-800">nishantpawade77@gmail.com</strong>.
-          </p>
-          <div className="p-3 bg-surface-50 rounded-xl border border-surface-200 text-xs text-slate-500 mb-6">
-            Signed in as: <span className="font-semibold text-slate-800">{user.email}</span>
-          </div>
-          <button
-            onClick={() => signOut()}
-            className="w-full py-2.5 px-4 bg-accent-600 hover:bg-accent-700 text-white rounded-xl text-sm font-medium transition-colors shadow-sm"
-          >
-            Sign out & Switch Account
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return <>{children}</>;
 }
 
